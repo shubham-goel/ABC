@@ -95,6 +95,7 @@ struct solver_t_ {
 	/* Bookmark */
 	unsigned book_cl_orig; /* Bookmark for orignal problem clauses vector */
 	unsigned book_cl_lrnt; /* Bookmark for learnt clauses vector */
+	unsigned book_cdb;     /* Bookmark clause database size */
 	unsigned book_vars;    /* Bookmark number of variables */
 	unsigned book_trail;   /* Bookmark trail size */
 
@@ -130,6 +131,11 @@ static inline unsigned lit2var(unsigned lit)
 static inline char var_value(solver_t *s, unsigned var)
 {
 	return vec_char_at(s->assigns, var);
+}
+
+static inline char var_polarity(solver_t *s, unsigned var)
+{
+	return vec_char_at(s->polarity, var);
 }
 
 static inline unsigned var_dlevel(solver_t *s, unsigned var)

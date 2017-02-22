@@ -216,7 +216,7 @@ int satoko_simplify(solver_t * s)
 	return SATOKO_OK;
 }
 
-void satoko_add_variable(solver_t *s, char sign)
+int satoko_add_variable(solver_t *s, char sign)
 {
 	unsigned var = vec_act_size(s->activity);
 	vec_wl_push(s->watches);
@@ -231,9 +231,10 @@ void satoko_add_variable(solver_t *s, char sign)
 	heap_insert(s->var_order, var);
 	if (s->marks)
 		vec_char_push_back(s->marks, 0);
+	return var;
 }
 
-int satoko_add_clause(solver_t *s, unsigned *lits, unsigned size)
+int satoko_add_clause(solver_t *s, int *lits, int size)
 {
 	unsigned i, j;
 	unsigned prev_lit;
@@ -248,10 +249,10 @@ int satoko_add_clause(solver_t *s, unsigned *lits, unsigned size)
 	vec_uint_clear(s->temp_lits);
 	j = 0;
 	prev_lit = UNDEF;
-	for (i = 0; i < size; i++) {
-		if (lits[i] == lit_neg(prev_lit) || lit_value(s, lits[i]) == LIT_TRUE)
+	for (i = 0; i < (unsigned)size; i++) {
+		if ((unsigned)lits[i] == lit_neg(prev_lit) || lit_value(s, lits[i]) == LIT_TRUE)
 			return SATOKO_OK;
-		else if (lits[i] != prev_lit && var_value(s, lit2var(lits[i])) == VAR_UNASSING) {
+		else if ((unsigned)lits[i] != prev_lit && var_value(s, lit2var(lits[i])) == VAR_UNASSING) {
 			prev_lit = lits[i];
 			vec_uint_push_back(s->temp_lits, lits[i]);
 		}
@@ -269,7 +270,7 @@ int satoko_add_clause(solver_t *s, unsigned *lits, unsigned size)
 	return SATOKO_OK;
 }
 
-void satoko_assump_push(solver_t *s, unsigned lit)
+void satoko_assump_push(solver_t *s, int lit)
 {
 	vec_uint_push_back(s->assumptions, lit);
 }
@@ -329,6 +330,43 @@ void satoko_unbookmark(satoko_t *s)
 {
 	s->book_cl_orig = 0;
 	s->book_cl_lrnt = 0;
+	s->book_cdb = 0;
+	s->book_vars = 0;
+	s->book_trail = 0;
+}
+
+void satoko_reset(satoko_t *s)
+{
+	vec_uint_clear(s->assumptions);
+	vec_uint_clear(s->final_conflict);
+	cdb_clear(s->all_clauses);
+	vec_uint_clear(s->originals);
+	vec_uint_clear(s->learnts);
+	vec_wl_clean(s->watches);
+	vec_act_clear(s->activity);
+	heap_clear(s->var_order);
+	vec_uint_clear(s->levels);
+	vec_uint_clear(s->reasons);
+	vec_char_clear(s->assigns);
+	vec_char_clear(s->polarity);
+	vec_uint_clear(s->trail);
+	vec_uint_clear(s->trail_lim);
+	b_queue_clean(s->bq_lbd);
+	b_queue_clean(s->bq_trail);
+	vec_uint_clear(s->temp_lits);
+	vec_char_clear(s->seen);
+	vec_uint_clear(s->tagged);
+	vec_uint_clear(s->stack);
+	vec_uint_clear(s->last_dlevel);
+	vec_uint_clear(s->stamps);
+	s->var_act_inc = VAR_ACT_INIT_INC;
+	s->clause_act_inc = CLAUSE_ACT_INIT_INC;
+	s->n_confl_bfr_reduce = s->opts.n_conf_fst_reduce;
+	s->RC1 = 1;
+	s->RC2 = s->opts.n_conf_fst_reduce;
+	s->book_cl_orig = 0;
+	s->book_cl_lrnt = 0;
+	s->book_cdb = 0;
 	s->book_vars = 0;
 	s->book_trail = 0;
 }
@@ -341,6 +379,11 @@ void satoko_rollback(satoko_t *s)
 	struct clause **cl_to_remove;
 
 	assert(solver_dlevel(s) == 0);
+	if (!s->book_vars) {
+		satoko_reset(s);
+		return;
+	}
+
 	cl_to_remove = satoko_alloc(struct clause *, n_originals + n_learnts);
 	/* Mark clauses */
 	vec_uint_foreach_start(s->originals, cref, i, s->book_cl_orig)
@@ -351,18 +394,28 @@ void satoko_rollback(satoko_t *s)
 		clause_unwatch(s, cdb_cref(s->all_clauses, (unsigned *)cl_to_remove[i]));
 		cl_to_remove[i]->f_mark = 1;
 	}
+	satoko_free(cl_to_remove);
 	vec_uint_shrink(s->originals, s->book_cl_orig);
 	vec_uint_shrink(s->learnts, s->book_cl_lrnt);
 	/* Shrink variable related vectors */
+	for (i = s->book_vars; i < 2 * vec_char_size(s->assigns); i++) {
+		vec_wl_at(s->watches, i)->size = 0;
+		vec_wl_at(s->watches, i)->n_bin = 0;
+	}
+	s->watches->size = s->book_vars;
 	vec_act_shrink(s->activity, s->book_vars);
 	vec_uint_shrink(s->levels, s->book_vars);
 	vec_uint_shrink(s->reasons, s->book_vars);
+	vec_uint_shrink(s->stamps, s->book_vars);
 	vec_char_shrink(s->assigns, s->book_vars);
+	vec_char_shrink(s->seen, s->book_vars);
 	vec_char_shrink(s->polarity, s->book_vars);
 	solver_rebuild_order(s);
 	/* Rewind solver and cancel level 0 assignments to the trail */
 	solver_cancel_until(s, 0);
 	vec_uint_shrink(s->trail, s->book_trail);
+	if (s->book_cdb)
+		s->all_clauses->size = s->book_cdb;
 	s->book_cl_orig = 0;
 	s->book_cl_lrnt = 0;
 	s->book_vars = 0;

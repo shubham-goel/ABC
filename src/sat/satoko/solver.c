@@ -195,7 +195,7 @@ static inline unsigned solver_decide(solver_t *s)
 		if (solver_has_marks(s) && !var_mark(s, next_var))
 			next_var = UNDEF;
 	}
-	return var2lit(next_var, vec_char_at(s->polarity, next_var));
+	return var2lit(next_var, var_polarity(s, next_var));
 }
 
 static inline void solver_new_decision(solver_t *s, unsigned lit)
@@ -362,13 +362,14 @@ static inline void solver_handle_conflict(solver_t *s, unsigned confl_cref)
 
 static inline void solver_analyze_final(solver_t *s, unsigned lit)
 {
-	unsigned i;
+	int i;
 
+	vec_uint_clear(s->final_conflict);
 	vec_uint_push_back(s->final_conflict, lit);
 	if (solver_dlevel(s) == 0)
 		return;
 	vec_char_assign(s->seen, lit2var(lit), 1);
-	for (i = vec_uint_size(s->trail) - 1; i <= vec_uint_at(s->trail_lim, 0); i--) {
+	for (i = (int) vec_uint_size(s->trail) - 1; i >= (int) vec_uint_at(s->trail_lim, 0); i--) {
 		unsigned var = lit2var(vec_uint_at(s->trail, i));
 
 		if (vec_char_at(s->seen, var)) {
@@ -395,6 +396,9 @@ static inline void solver_garbage_collect(solver_t *s)
 	unsigned i;
 	unsigned *array;
 	struct cdb *new_cdb = cdb_alloc(cdb_capacity(s->all_clauses) - cdb_wasted(s->all_clauses));
+
+	if (s->book_cdb)
+		s->book_cdb = 0;
 
 	for (i = 0; i < 2 * vec_char_size(s->assigns); i++) {
 		struct watcher *w;
