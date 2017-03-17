@@ -45,6 +45,33 @@ struct Int_Pair_t_
     int second;
 };
 
+typedef struct Wla_Man_t_ Wla_Man_t;
+struct Wla_Man_t_
+{
+    Pdr_Man_t * pPdr;
+    Pdr_Par_t * pPdrPars;
+    Vec_Vec_t * vClauses;
+    Vec_Int_t * vBlacks;
+    Aig_Man_t * pAig;
+    Abc_Cex_t * pCex;
+    Vec_Int_t * vPisNew;  
+    Vec_Int_t * vRefine;  
+    Gia_Man_t * pGia;
+    Wlc_Ntk_t * pAbs;
+    Wlc_Ntk_t * p;
+    Wlc_Par_t * pPars;
+    Vec_Bit_t * vUnmark;
+
+    int nIters;
+    int nTotalCla;
+    int nDisj;
+    int nNDisj;
+
+    abctime tPdr;
+    abctime tCbr;
+    abctime tPbr;
+};
+
 int IntPairPtrCompare ( Int_Pair_t ** a, Int_Pair_t ** b )
 {
     return (*a)->second < (*b)->second; 
@@ -53,6 +80,62 @@ int IntPairPtrCompare ( Int_Pair_t ** a, Int_Pair_t ** b )
 ////////////////////////////////////////////////////////////////////////
 ///                     FUNCTION DEFINITIONS                         ///
 ////////////////////////////////////////////////////////////////////////
+
+void Wlc_NtkPrintNtk( Wlc_Ntk_t * p )
+{
+    int i;
+    Wlc_Obj_t * pObj;
+
+    Abc_Print( 1, "PIs:");
+    Wlc_NtkForEachPi( p, pObj, i )
+        Abc_Print( 1, " %s", Wlc_ObjName(p, Wlc_ObjId(p, pObj)) );
+    Abc_Print( 1, "\n\n");
+
+    Abc_Print( 1, "POs:");
+    Wlc_NtkForEachPo( p, pObj, i )
+        Abc_Print( 1, " %s", Wlc_ObjName(p, Wlc_ObjId(p, pObj)) );
+    Abc_Print( 1, "\n\n");
+
+    Abc_Print( 1, "FO(Fi)s:");
+    Wlc_NtkForEachCi( p, pObj, i )
+        if ( !Wlc_ObjIsPi( pObj ) )
+            Abc_Print( 1, " %s(%s)", Wlc_ObjName(p, Wlc_ObjId(p, pObj)), Wlc_ObjName(p, Wlc_ObjId(p, Wlc_ObjFo2Fi(p, pObj))) );
+    Abc_Print( 1, "\n\n");
+
+    Abc_Print( 1, "Objs:\n");
+    Wlc_NtkForEachObj( p, pObj, i )
+    {
+        if ( !Wlc_ObjIsCi(pObj) )
+           Wlc_NtkPrintNode( p, pObj ) ;
+    }
+}
+
+void Wlc_NtkAbsGetSupp_rec( Wlc_Ntk_t * p, Wlc_Obj_t * pObj, Vec_Bit_t * vCiMarks, Vec_Int_t * vSuppRefs, Vec_Int_t * vSuppList )
+{
+    int i, iFanin, iObj;
+    if ( pObj->Mark ) // visited
+        return;
+    pObj->Mark = 1;
+    iObj = Wlc_ObjId( p, pObj );
+    if ( Vec_BitEntry( vCiMarks, iObj ) )
+    {
+        if ( vSuppRefs )
+            Vec_IntAddToEntry( vSuppRefs, iObj, 1 );
+        if ( vSuppList )
+            Vec_IntPush( vSuppList, iObj );
+        return;
+    }
+    Wlc_ObjForEachFanin( pObj, iFanin, i )
+        Wlc_NtkAbsGetSupp_rec( p, Wlc_NtkObj(p, iFanin), vCiMarks, vSuppRefs, vSuppList );
+}
+
+void Wlc_NtkAbsGetSupp( Wlc_Ntk_t * p, Wlc_Obj_t * pObj, Vec_Bit_t * vCiMarks, Vec_Int_t * vSuppRefs, Vec_Int_t * vSuppList)
+{
+    assert( vSuppRefs || vSuppList );
+    Wlc_NtkCleanMarks( p );
+
+    Wlc_NtkAbsGetSupp_rec( p, pObj, vCiMarks, vSuppRefs, vSuppList );
+}
 
 int Wlc_NtkNumPiBits( Wlc_Ntk_t * pNtk ) 
 {
@@ -63,6 +146,93 @@ int Wlc_NtkNumPiBits( Wlc_Ntk_t * pNtk )
         num += Wlc_ObjRange(pObj);
     }
     return num;
+}
+
+void Wlc_NtkAbsAnalyzeRefine( Wlc_Ntk_t * p, Vec_Int_t * vBlacks, Vec_Bit_t * vUnmark, int * nDisj, int * nNDisj )
+{
+    Vec_Bit_t * vCurCis, * vCandCis;
+    Vec_Int_t * vSuppList;
+    Vec_Int_t * vDeltaB;
+    Vec_Int_t * vSuppRefs;
+    int i, Entry;
+    Wlc_Obj_t * pObj;
+    
+    vCurCis    = Vec_BitStart( Wlc_NtkObjNumMax( p ) );
+    vCandCis   = Vec_BitStart( Wlc_NtkObjNumMax( p ) );
+    vDeltaB    = Vec_IntAlloc( Vec_IntSize(vBlacks) );
+    vSuppList  = Vec_IntAlloc( Wlc_NtkCiNum(p) + Vec_IntSize(vBlacks) );
+    vSuppRefs  = Vec_IntAlloc( Wlc_NtkObjNumMax( p ) );
+
+
+    Vec_IntFill( vSuppRefs, Wlc_NtkObjNumMax( p ), 0 );
+
+    Wlc_NtkForEachCi( p, pObj, i )
+    {
+        Vec_BitWriteEntry( vCurCis, Wlc_ObjId(p, pObj), 1 ) ;
+        Vec_BitWriteEntry( vCandCis, Wlc_ObjId(p, pObj), 1 ) ;
+    }
+
+    Vec_IntForEachEntry( vBlacks, Entry, i )
+    {
+        Vec_BitWriteEntry( vCurCis, Entry, 1 );
+        if ( !Vec_BitEntry( vUnmark, Entry ) )
+            Vec_BitWriteEntry( vCandCis, Entry, 1 );
+        else
+            Vec_IntPush( vDeltaB, Entry );
+    }
+    assert( Vec_IntSize( vDeltaB ) );
+    
+    Wlc_NtkForEachCo( p, pObj, i )
+        Wlc_NtkAbsGetSupp( p, pObj, vCurCis, vSuppRefs, NULL );
+    
+    /*
+    Abc_Print( 1, "SuppCurrentAbs =" );
+    Wlc_NtkForEachObj( p, pObj, i )
+        if ( Vec_IntEntry(vSuppRefs, i) > 0 )
+            Abc_Print( 1, " %d", i );
+    Abc_Print( 1, "\n" );
+    */
+
+    Vec_IntForEachEntry( vDeltaB, Entry, i )
+        Wlc_NtkAbsGetSupp( p, Wlc_NtkObj(p, Entry), vCandCis, vSuppRefs, NULL );
+
+    Vec_IntForEachEntry( vDeltaB, Entry, i )
+    {
+        int iSupp, ii;
+        int fDisjoint = 1;
+
+        Vec_IntClear( vSuppList );
+        Wlc_NtkAbsGetSupp( p, Wlc_NtkObj(p, Entry), vCandCis, NULL, vSuppList );
+
+        //Abc_Print( 1, "SuppCandAbs =" );
+        Vec_IntForEachEntry( vSuppList, iSupp, ii )
+        {
+            //Abc_Print( 1, " %d(%d)", iSupp, Vec_IntEntry( vSuppRefs, iSupp ) );
+            if ( Vec_IntEntry( vSuppRefs, iSupp ) >= 2 )
+            {
+                fDisjoint = 0;
+                break;
+            }
+        }
+        //Abc_Print( 1, "\n" );
+        
+        if ( fDisjoint )
+        {
+            //Abc_Print( 1, "PPI[%d] is disjoint.\n", Entry );
+            ++(*nDisj);
+        }
+        else 
+        {
+            //Abc_Print( 1, "PPI[%d] is non-disjoint.\n", Entry );
+            ++(*nNDisj);
+        }
+    }
+
+    Vec_BitFree( vCurCis );
+    Vec_BitFree( vCandCis );
+    Vec_IntFree( vDeltaB );
+    Vec_IntFree( vSuppList );
+    Vec_IntFree( vSuppRefs );
 }
 
 static Vec_Int_t * Wlc_NtkGetCoreSels( Gia_Man_t * pFrames, int nFrames, int num_sel_pis, int num_other_pis, Vec_Bit_t * vMark, int sel_pi_first, int nConfLimit, Wlc_Par_t * pPars ) 
@@ -1035,7 +1205,309 @@ Vec_Int_t * Wlc_NtkFlopsRemap( Wlc_Ntk_t * p, Vec_Int_t * vFfOld, Vec_Int_t * vF
   SeeAlso     []
 
 ***********************************************************************/
+
+Wlc_Ntk_t * Wla_ManCreateAbs( Wla_Man_t * pWla )
+{
+    // get abstracted GIA and the set of pseudo-PIs (vPisNew)
+    if ( pWla->vBlacks == NULL )
+        pWla->vBlacks = Wlc_NtkGetBlacks( pWla->p, pWla->pPars );
+    else
+        Wlc_NtkUpdateBlacks( pWla->p, pWla->pPars, &pWla->vBlacks, pWla->vUnmark );
+    pWla->pAbs = Wlc_NtkAbs2( pWla->p, pWla->vBlacks, NULL );
+    pWla->vPisNew = Vec_IntDup( pWla->vBlacks );
+
+    return pWla->pAbs;
+}
+
+Aig_Man_t * Wla_ManBitBlast( Wla_Man_t * pWla )
+{
+    int nDcFlops;
+    Gia_Man_t * pTemp;
+
+    pWla->pGia = Wlc_NtkBitBlast( pWla->pAbs, NULL, -1, 0, 0, 0, 0, 0 );
+
+    // if the abstraction has flops with DC-init state,
+    // new PIs were introduced by bit-blasting at the end of the PI list
+    // here we move these variables to be *before* PPIs, because
+    // PPIs are supposed to be at the end of the PI list for refinement
+    nDcFlops = Wlc_NtkDcFlopNum(pWla->pAbs);
+    if ( nDcFlops > 0 ) // DC-init flops are present
+    {
+        pWla->pGia = Gia_ManPermuteInputs( pTemp = pWla->pGia, Wlc_NtkCountObjBits(pWla->p, pWla->vPisNew), nDcFlops );
+        Gia_ManStop( pTemp );
+    }
+    // if the word-level outputs have to be XORs, this is a place to do it
+    if ( pWla->pPars->fXorOutput )
+    {
+        pWla->pGia = Gia_ManTransformMiter2( pTemp = pWla->pGia );
+        Gia_ManStop( pTemp );
+    }
+    if ( pWla->pPars->fVerbose )
+    {
+        printf( "Derived abstraction with %d objects and %d PPIs. Bit-blasted AIG stats are:\n", Wlc_NtkObjNum(pWla->pAbs), Vec_IntSize(pWla->vPisNew) ); 
+        Gia_ManPrintStats( pWla->pGia, NULL );
+    }
+
+    // try to prove abstracted GIA by converting it to AIG and calling PDR
+    pWla->pAig = Gia_ManToAigSimple( pWla->pGia );
+
+    Wlc_NtkFree( pWla->pAbs );
+
+    return pWla->pAig;
+}
+
+int Wla_ManSolve( Wla_Man_t * pWla )
+{
+    abctime clk;
+    int RetValue = -1;
+
+    if ( pWla->vClauses && pWla->pPars->fCheckCombUnsat )
+    {
+        Pdr_Man_t * pPdr2;
+
+        if ( Aig_ManAndNum( pWla->pAig ) <= 20000 )
+        { 
+            Aig_Man_t * pAigScorr;
+            Ssw_Pars_t ScorrPars, * pScorrPars = &ScorrPars;
+            int nAnds;
+
+            clk = Abc_Clock();
+
+            Ssw_ManSetDefaultParams( pScorrPars );
+            pScorrPars->fStopWhenGone = 1;
+            pScorrPars->nFramesK = 1;
+            pAigScorr = Ssw_SignalCorrespondence( pWla->pAig, pScorrPars );
+            assert ( pAigScorr );
+            nAnds = Aig_ManAndNum( pAigScorr); 
+            Aig_ManStop( pAigScorr );
+
+            if ( nAnds == 0 )
+            {
+                if ( pWla->pPars->fVerbose )
+                    Abc_PrintTime( 1, "SCORR proved UNSAT. Time", Abc_Clock() - clk );
+                return 1;
+            }
+            else if ( pWla->pPars->fVerbose )
+            {
+                Abc_Print( 1, "SCORR failed with %d ANDs. ", nAnds);
+                Abc_PrintTime( 1, "Time", Abc_Clock() - clk );
+            }
+        }
+
+        clk = Abc_Clock();
+
+        pWla->pPdrPars->fVerbose = 0;
+        pPdr2 = Pdr_ManStart( pWla->pAig, pWla->pPdrPars, NULL );
+        RetValue = IPdr_ManCheckCombUnsat( pPdr2 );
+        Pdr_ManStop( pPdr2 );
+        pWla->pPdrPars->fVerbose = pWla->pPars->fPdrVerbose;
+
+        pWla->tPdr += Abc_Clock() - clk;
+
+        if ( RetValue == 1 )
+        {
+            if ( pWla->pPars->fVerbose )
+                Abc_PrintTime( 1,  "ABS becomes combinationally UNSAT. Time", Abc_Clock() - clk );
+            return 1;
+        }
+
+        if ( pWla->pPars->fVerbose )
+            Abc_PrintTime( 1, "Check comb. unsat failed. Time", Abc_Clock() - clk );
+    }
+
+    clk = Abc_Clock();
+    pWla->pPdr = Pdr_ManStart( pWla->pAig, pWla->pPdrPars, NULL );
+    if ( pWla->vClauses ) {
+        assert( Vec_VecSize( pWla->vClauses) >= 2 ); 
+        IPdr_ManRestore( pWla->pPdr, pWla->vClauses, NULL );
+    }
+
+    if ( !pWla->vClauses || RetValue != 1 )
+        RetValue = IPdr_ManSolveInt( pWla->pPdr, pWla->pPars->fCheckClauses, pWla->pPars->fPushClauses );
+    pWla->pPdr->tTotal += Abc_Clock() - clk;
+    pWla->tPdr += pWla->pPdr->tTotal;
+
+    pWla->pCex = pWla->pAig->pSeqModel;
+    pWla->pAig->pSeqModel = NULL;
+
+    // consider outcomes
+    if ( pWla->pCex == NULL ) 
+    {
+        assert( RetValue ); // proved or undecided
+        return RetValue;
+    }
+
+    // verify CEX
+    if ( Wlc_NtkCexIsReal( pWla->p, pWla->pCex ) )
+        return 0;
+
+    return -1;
+}
+
+void Wla_ManRefine( Wla_Man_t * pWla )
+{
+    abctime clk;
+    int nNodes;
+    // perform refinement
+    if ( pWla->pPars->fHybrid || !pWla->pPars->fProofRefine )
+    {
+        clk = Abc_Clock();
+        pWla->vRefine = Wlc_NtkAbsRefinement( pWla->p, pWla->pGia, pWla->pCex, pWla->vPisNew );
+        pWla->tCbr += Abc_Clock() - clk;
+    }
+    else // proof-based only
+    {
+        pWla->vRefine = Vec_IntDup( pWla->vPisNew );
+    }
+    if ( pWla->pPars->fProofRefine ) 
+    {
+        clk = Abc_Clock();
+        Wlc_NtkProofRefine( pWla->p, pWla->pPars, pWla->pCex, pWla->vPisNew, &pWla->vRefine );
+        pWla->tPbr += Abc_Clock() - clk;
+    }
+
+    pWla->vClauses = IPdr_ManSaveClauses( pWla->pPdr, 0 );
+    if ( pWla->vClauses && pWla->pPars->fVerbose )
+    {
+        int i;
+        Vec_Ptr_t * vVec; 
+        Vec_VecForEachLevel( pWla->vClauses, vVec, i )
+            pWla->nTotalCla += Vec_PtrSize( vVec ); 
+    }
+
+    // update the set of objects to be un-abstracted
+    clk = Abc_Clock();
+    if ( pWla->pPars->fMFFC )
+    {
+        nNodes = Wlc_NtkRemoveFromAbstraction( pWla->p, pWla->vRefine, pWla->vUnmark );
+        if ( pWla->pPars->fVerbose )
+            printf( "Refinement of CEX in frame %d came up with %d un-abstacted PPIs, whose MFFCs include %d objects.\n", pWla->pCex->iFrame, Vec_IntSize(pWla->vRefine), nNodes );
+    }
+    else
+    {
+        nNodes = Wlc_NtkUnmarkRefinement( pWla->p, pWla->vRefine, pWla->vUnmark );
+        if ( pWla->pPars->fVerbose )
+            printf( "Refinement of CEX in frame %d came up with %d un-abstacted PPIs.\n", pWla->pCex->iFrame, Vec_IntSize(pWla->vRefine) );
+
+    }
+    /*
+    if ( pWla->pPars->fVerbose ) 
+    {
+        Wlc_NtkAbsAnalyzeRefine( pWla->p, pWla->vBlacks, pWla->vUnmark, &pWla->nDisj, &pWla->nNDisj );
+        Abc_Print( 1, "Refine analysis (total): %d disjoint PPIs and %d non-disjoint PPIs\n", pWla->nDisj, pWla->nNDisj );
+    }
+    */
+    pWla->tCbr += Abc_Clock() - clk;
+
+    Pdr_ManStop( pWla->pPdr ); pWla->pPdr = NULL;
+    Gia_ManStop( pWla->pGia ); pWla->pGia = NULL;
+    Vec_IntFree( pWla->vPisNew ); pWla->vPisNew = NULL;
+    Vec_IntFree( pWla->vRefine ); pWla->vRefine = NULL;
+    Abc_CexFree( pWla->pCex ); pWla->pCex = NULL;
+    Aig_ManStop( pWla->pAig ); pWla->pAig = NULL;
+}
+
+Wla_Man_t * Wla_ManStart( Wlc_Ntk_t * pNtk, Wlc_Par_t * pPars )
+{
+    Wla_Man_t * p = ABC_CALLOC( Wla_Man_t, 1 );
+    Pdr_Par_t * pPdrPars;
+    p->p = pNtk;
+    p->pPars = pPars;
+    p->vUnmark = Vec_BitStart( Wlc_NtkObjNumMax(pNtk) );
+
+    pPdrPars = ABC_CALLOC( Pdr_Par_t, 1 );
+    Pdr_ManSetDefaultParams( pPdrPars );
+    pPdrPars->fVerbose   = pPars->fPdrVerbose;
+    pPdrPars->fVeryVerbose = 0;
+    if ( pPars->fPdra )
+    {
+        pPdrPars->fUseAbs    = 1;   // use 'pdr -t'  (on-the-fly abstraction)
+        pPdrPars->fCtgs      = 1;   // use 'pdr -nc' (improved generalization)
+        pPdrPars->fSkipDown  = 0;   // use 'pdr -nc' (improved generalization)
+        pPdrPars->nRestLimit = 500; // reset queue or proof-obligations when it gets larger than this
+    } 
+    p->pPdrPars = pPdrPars;
+
+    p->nIters = 1;
+    p->nTotalCla = 0;
+    p->nDisj = 0;
+    p->nNDisj = 0;
+
+    return p;
+}
+
+void Wla_ManStop( Wla_Man_t * p )
+{
+    if ( p->vBlacks )   Vec_IntFree( p->vBlacks );
+    if ( p->pPdr )      Pdr_ManStop( p->pPdr );
+    if ( p->pGia )      Gia_ManStop( p->pGia );
+    if ( p->vPisNew )   Vec_IntFree( p->vPisNew );
+    if ( p->vRefine )   Vec_IntFree( p->vRefine );
+    if ( p->pCex )      Abc_CexFree( p->pCex );
+    if ( p->pAig )      Aig_ManStop( p->pAig );
+    Vec_BitFree( p->vUnmark );
+    ABC_FREE( p->pPdrPars );
+    ABC_FREE( p );
+}
+
 int Wlc_NtkPdrAbs( Wlc_Ntk_t * p, Wlc_Par_t * pPars )
+{
+    abctime clk = Abc_Clock();
+    abctime tTotal;
+    Wla_Man_t * pWla = NULL;
+    int RetValue = -1;
+
+    pWla = Wla_ManStart( p, pPars );
+
+    // perform refinement iterations
+    for ( pWla->nIters = 1; pWla->nIters < pPars->nIterMax; ++pWla->nIters )
+    {
+        if ( pPars->fVerbose )
+            printf( "\nIteration %d:\n", pWla->nIters );
+
+        Wla_ManCreateAbs( pWla );
+        Wla_ManBitBlast( pWla );
+
+        RetValue = Wla_ManSolve( pWla );
+
+        if ( RetValue != -1 )
+            break;
+
+        Wla_ManRefine( pWla );
+    }
+
+    // report the result
+    if ( pPars->fVerbose )
+        printf( "\n" );
+    printf( "Abstraction " );
+    if ( RetValue == 0 )
+        printf( "resulted in a real CEX" );
+    else if ( RetValue == 1 )
+        printf( "is successfully proved" );
+    else 
+        printf( "timed out" );
+    printf( " after %d iterations. ", pWla->nIters );
+    tTotal = Abc_Clock() - clk;
+    Abc_PrintTime( 1, "Time", tTotal );
+
+    if ( pPars->fVerbose )
+        Abc_Print( 1, "PDRA reused %d clauses.\n", pWla->nTotalCla );
+    if ( pPars->fVerbose )
+    {
+        ABC_PRTP( "PDR          ", pWla->tPdr,                          tTotal );
+        ABC_PRTP( "CEX Refine   ", pWla->tCbr,                          tTotal );
+        ABC_PRTP( "Proof Refine ", pWla->tPbr,                          tTotal );
+        ABC_PRTP( "Misc.        ", tTotal - pWla->tPdr - pWla->tCbr - pWla->tPbr,   tTotal );
+        ABC_PRTP( "Total        ", tTotal,                              tTotal );
+    }
+
+    Wla_ManStop( pWla );
+    
+    return RetValue;
+}
+
+/*
+int Wlc_NtkPdrAbs2( Wlc_Ntk_t * p, Wlc_Par_t * pPars )
 {
     abctime clk = Abc_Clock();
     abctime clk2;
@@ -1046,6 +1518,7 @@ int Wlc_NtkPdrAbs( Wlc_Ntk_t * p, Wlc_Par_t * pPars )
     Vec_Int_t * vBlacks = NULL;
     int nIters, nNodes, nDcFlops, RetValue = -1, nGiaFfNumOld = -1;
     int nTotalCla = 0;
+    int nDisj = 0, nNDisj = 0;
     // start the bitmap to mark objects that cannot be abstracted because of refinement
     // currently, this bitmap is empty because abstraction begins without refinement
     Vec_Bit_t * vUnmark = Vec_BitStart( Wlc_NtkObjNumMax(p) );
@@ -1063,6 +1536,7 @@ int Wlc_NtkPdrAbs( Wlc_Ntk_t * p, Wlc_Par_t * pPars )
         pPdrPars->nRestLimit = 500; // reset queue or proof-obligations when it gets larger than this
     } 
 
+    
     // perform refinement iterations
     for ( nIters = 1; nIters < pPars->nIterMax; nIters++ )
     {
@@ -1290,6 +1764,9 @@ int Wlc_NtkPdrAbs( Wlc_Ntk_t * p, Wlc_Par_t * pPars )
                 printf( "Refinement of CEX in frame %d came up with %d un-abstacted PPIs.\n", pCex->iFrame, Vec_IntSize(vRefine) );
 
         }
+        Wlc_NtkAbsAnalyzeRefine( p, vBlacks, vUnmark, &nDisj, &nNDisj );
+        if ( pPars->fVerbose )
+            Abc_Print( 1, "Refine analysis (total): %d disjoint PPIs and %d non-disjoint PPIs\n", nDisj, nNDisj );
         tCbr += Abc_Clock() - clk2;
 
         Vec_IntFree( vRefine );
@@ -1328,6 +1805,7 @@ int Wlc_NtkPdrAbs( Wlc_Ntk_t * p, Wlc_Par_t * pPars )
     
     return RetValue;
 }
+*/
 
 /**Function*************************************************************
 
