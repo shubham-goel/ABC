@@ -1046,6 +1046,34 @@ SOURCE=.\src\base\exor\exorList.c
 SOURCE=.\src\base\exor\exorUtil.c
 # End Source File
 # End Group
+# Begin Group "acb"
+
+# PROP Default_Filter ""
+# Begin Source File
+
+SOURCE=.\src\base\acb\acb.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\base\acb\acb.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\base\acb\acbAbc.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\base\acb\acbAig.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\base\acb\acbCom.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\base\acb\acbFunc.c
+# End Source File
+# End Group
 # End Group
 # Begin Group "bdd"
 
@@ -4783,6 +4811,10 @@ SOURCE=.\src\aig\gia\giaTsim.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\aig\gia\giaUnate.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\aig\gia\giaUtil.c
 # End Source File
 # End Group
@@ -4791,11 +4823,19 @@ SOURCE=.\src\aig\gia\giaUtil.c
 # PROP Default_Filter ""
 # Begin Source File
 
+SOURCE=.\src\aig\miniaig\abcOper.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\aig\miniaig\miniaig.h
 # End Source File
 # Begin Source File
 
 SOURCE=.\src\aig\miniaig\minilut.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\aig\miniaig\ndr.h
 # End Source File
 # End Group
 # End Group
