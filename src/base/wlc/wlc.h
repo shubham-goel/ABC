@@ -181,6 +181,7 @@ struct Wlc_Par_t_
     int                    fAbs2;              // Use UFAR style createAbs
     int                    fProofUsePPI;       // Use PPI values in PBR
     int                    fUseBmc3;           // Run BMC3 in parallel 
+    int                    fShrinkAbs;         // Shrink Abs with BMC
     int                    fVerbose;           // verbose output
     int                    fPdrVerbose;        // verbose output
 };
@@ -192,11 +193,15 @@ struct Wla_Man_t_
     Wlc_Par_t * pPars;
     Vec_Vec_t * vClauses;
     Vec_Int_t * vBlacks;
+    Vec_Int_t * vSignals;
     Abc_Cex_t * pCex;
     Gia_Man_t * pGia;
     Vec_Bit_t * vUnmark;
     void      * pPdrPars;
     void      * pThread;
+
+    int iCexFrame;
+    int fNewAbs;
 
     int nIters;
     int nTotalCla;
